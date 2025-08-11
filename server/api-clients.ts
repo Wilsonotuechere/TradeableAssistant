@@ -13,23 +13,41 @@ export class BinanceClient {
   async getTopCryptocurrencies(): Promise<any[]> {
     try {
       const response = await fetch(`${this.baseUrl}/ticker/24hr`);
-      const data = await response.json() as any[];
       
-      // Get top 10 cryptocurrencies by volume
-      const topCryptos = data
-        .filter(coin => coin.symbol.endsWith('USDT'))
+      if (!response.ok) {
+        throw new Error(`Binance API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (!Array.isArray(data)) {
+        console.error('Binance API returned non-array data:', typeof data);
+        throw new Error('Invalid response format from Binance API');
+      }
+      
+      // Get top cryptocurrencies by volume (USDT pairs)
+      const usdtPairs = data.filter(coin => 
+        coin.symbol && coin.symbol.endsWith('USDT') && 
+        parseFloat(coin.volume) > 0
+      );
+      
+      const topCryptos = usdtPairs
         .sort((a, b) => parseFloat(b.volume) - parseFloat(a.volume))
-        .slice(0, 10)
-        .map(coin => ({
-          symbol: coin.symbol.replace('USDT', ''),
-          name: this.getSymbolName(coin.symbol.replace('USDT', '')),
-          price: parseFloat(coin.lastPrice).toFixed(2),
-          priceChange24h: parseFloat(coin.priceChange).toFixed(2),
-          priceChangePercent24h: parseFloat(coin.priceChangePercent).toFixed(2),
-          volume24h: parseFloat(coin.volume).toFixed(0),
-          marketCap: (parseFloat(coin.lastPrice) * parseFloat(coin.volume)).toFixed(0)
-        }));
+        .slice(0, 8)
+        .map(coin => {
+          const symbol = coin.symbol.replace('USDT', '');
+          return {
+            symbol,
+            name: this.getSymbolName(symbol),
+            price: parseFloat(coin.lastPrice).toFixed(2),
+            priceChange24h: parseFloat(coin.priceChange).toFixed(2),
+            priceChangePercent24h: parseFloat(coin.priceChangePercent).toFixed(2),
+            volume24h: parseFloat(coin.volume).toFixed(0),
+            marketCap: (parseFloat(coin.lastPrice) * parseFloat(coin.volume)).toFixed(0)
+          };
+        });
 
+      console.log(`Successfully fetched ${topCryptos.length} cryptocurrencies from Binance`);
       return topCryptos;
     } catch (error) {
       console.error('Binance API error:', error);
@@ -39,29 +57,63 @@ export class BinanceClient {
 
   async getMarketStats(): Promise<MarketStats> {
     try {
-      // Get BTC price for dominance calculation
+      // Get BTC price
       const btcResponse = await fetch(`${this.baseUrl}/ticker/price?symbol=BTCUSDT`);
-      const btcData = await btcResponse.json() as any;
+      if (!btcResponse.ok) {
+        throw new Error(`BTC price API error: ${btcResponse.status}`);
+      }
+      const btcData = await btcResponse.json();
       
-      // Get 24hr stats for volume
+      // Get 24hr stats for major coins
       const statsResponse = await fetch(`${this.baseUrl}/ticker/24hr`);
-      const statsData = await statsResponse.json() as any[];
+      if (!statsResponse.ok) {
+        throw new Error(`24hr stats API error: ${statsResponse.status}`);
+      }
+      const statsData = await statsResponse.json();
       
-      const totalVolume = statsData
-        .filter(coin => coin.symbol.endsWith('USDT'))
-        .reduce((sum, coin) => sum + parseFloat(coin.volume) * parseFloat(coin.lastPrice), 0);
+      if (!Array.isArray(statsData)) {
+        throw new Error('Invalid stats data format');
+      }
+      
+      // Calculate total volume for USDT pairs
+      const usdtPairs = statsData.filter(coin => 
+        coin.symbol && coin.symbol.endsWith('USDT')
+      );
+      
+      const totalVolume = usdtPairs.reduce((sum, coin) => {
+        const volume = parseFloat(coin.volume) || 0;
+        const price = parseFloat(coin.lastPrice) || 0;
+        return sum + (volume * price);
+      }, 0);
 
-      // Estimated market cap (simplified calculation)
-      const estimatedMarketCap = totalVolume * 50; // Rough multiplier
-      const btcPrice = parseFloat(btcData.price);
-      const btcMarketCap = btcPrice * 19700000; // Approximate BTC supply
-      const btcDominance = (btcMarketCap / estimatedMarketCap * 100).toFixed(1);
+      // Get Fear & Greed Index from alternative API
+      let fearGreedIndex = 65; // Default
+      try {
+        const fearGreedResponse = await fetch('https://api.alternative.me/fng/');
+        if (fearGreedResponse.ok) {
+          const fearGreedData = await fearGreedResponse.json() as any;
+          if (fearGreedData.data && fearGreedData.data[0]) {
+            fearGreedIndex = parseInt(fearGreedData.data[0].value);
+          }
+        }
+      } catch (fgError) {
+        console.warn('Fear & Greed API unavailable, using default');
+      }
 
+      // Market cap estimation (simplified)
+      const estimatedMarketCap = totalVolume * 45; // Conservative multiplier
+      const btcPrice = parseFloat((btcData as any).price);
+      const btcSupply = 19700000; // Approximate circulating supply
+      const btcMarketCap = btcPrice * btcSupply;
+      const btcDominance = ((btcMarketCap / estimatedMarketCap) * 100).toFixed(1);
+
+      console.log('Successfully calculated market stats from Binance data');
+      
       return {
         totalMarketCap: `$${(estimatedMarketCap / 1e12).toFixed(2)}T`,
         totalVolume24h: `$${(totalVolume / 1e9).toFixed(1)}B`,
         btcDominance: `${btcDominance}%`,
-        fearGreedIndex: 65 // We'll use a static value for now
+        fearGreedIndex
       };
     } catch (error) {
       console.error('Market stats error:', error);
@@ -120,35 +172,52 @@ export class SentimentClient {
   async analyzeSentiment(text: string): Promise<'positive' | 'neutral' | 'negative'> {
     try {
       const response = await fetch(
-        'https://api-inference.huggingface.co/models/cardiffnlp/twitter-roberta-base-sentiment-latest',
+        'https://api-inference.huggingface.co/models/distilbert-base-uncased-finetuned-sst-2-english',
         {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${HUGGINGFACE_API_KEY}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ inputs: text }),
+          body: JSON.stringify({ inputs: text.slice(0, 500) }), // Limit text length
         }
       );
 
       if (!response.ok) {
-        throw new Error(`Sentiment API error: ${response.status}`);
+        console.warn(`Sentiment API error: ${response.status}, falling back to basic analysis`);
+        return this.basicSentimentAnalysis(text);
       }
 
       const result = await response.json() as any;
       
-      if (Array.isArray(result) && result[0]) {
-        const sentiment = result[0][0];
-        if (sentiment.label.includes('POSITIVE')) return 'positive';
-        if (sentiment.label.includes('NEGATIVE')) return 'negative';
-        return 'neutral';
+      if (Array.isArray(result) && result[0] && Array.isArray(result[0])) {
+        const sentiments = result[0];
+        const positive = sentiments.find((s: any) => s.label === 'POSITIVE');
+        const negative = sentiments.find((s: any) => s.label === 'NEGATIVE');
+        
+        if (positive && negative) {
+          return positive.score > negative.score ? 'positive' : 'negative';
+        }
       }
       
-      return 'neutral';
+      return this.basicSentimentAnalysis(text);
     } catch (error) {
-      console.error('Sentiment analysis error:', error);
-      return 'neutral'; // Fallback to neutral on error
+      console.warn('Sentiment analysis error, using basic analysis:', error);
+      return this.basicSentimentAnalysis(text);
     }
+  }
+
+  private basicSentimentAnalysis(text: string): 'positive' | 'neutral' | 'negative' {
+    const positiveWords = ['rise', 'bull', 'gain', 'up', 'high', 'surge', 'pump', 'moon', 'rally', 'green', 'profit', 'buy'];
+    const negativeWords = ['fall', 'bear', 'drop', 'down', 'low', 'crash', 'dump', 'red', 'loss', 'sell', 'decline'];
+    
+    const lowerText = text.toLowerCase();
+    const positiveCount = positiveWords.filter(word => lowerText.includes(word)).length;
+    const negativeCount = negativeWords.filter(word => lowerText.includes(word)).length;
+    
+    if (positiveCount > negativeCount) return 'positive';
+    if (negativeCount > positiveCount) return 'negative';
+    return 'neutral';
   }
 
   async calculateOverallSentiment(articles: any[]): Promise<SentimentData> {

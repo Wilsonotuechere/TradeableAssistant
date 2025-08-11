@@ -10,33 +10,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Market data routes
   app.get("/api/market", async (req, res) => {
     try {
-      // Try to fetch real data from Binance API first
-      let marketData, marketStats;
+      // Check cache first
+      const cachedData = await storage.getCachedMarketData();
+      if (cachedData && cachedData.length > 0) {
+        const stats = await storage.getMarketStats();
+        return res.json({ success: true, data: { coins: cachedData, stats } });
+      }
+
+      console.log('Fetching real market data from Binance...');
       
-      try {
-        console.log('Fetching real market data from Binance...');
-        marketData = await binanceClient.getTopCryptocurrencies();
-        marketStats = await binanceClient.getMarketStats();
-        console.log('Successfully fetched real market data');
-      } catch (apiError) {
-        console.warn('Binance API failed, falling back to mock data:', apiError);
-        // Fallback to stored mock data
-        marketData = await storage.getMarketData();
-        marketStats = await storage.getMarketStats();
+      // Fetch real data from Binance API
+      const [realMarketData, realMarketStats] = await Promise.all([
+        binanceClient.getTopCryptocurrencies(),
+        binanceClient.getMarketStats()
+      ]);
+      
+      if (realMarketData && realMarketData.length > 0) {
+        // Update storage with real data
+        await storage.updateMarketData(realMarketData.map(coin => ({
+          symbol: coin.symbol,
+          name: coin.name,
+          price: coin.price,
+          priceChange24h: coin.priceChange24h,
+          priceChangePercent24h: coin.priceChangePercent24h,
+          volume24h: coin.volume24h,
+          marketCap: coin.marketCap
+        })));
+        
+        const coins = await storage.getMarketData();
+        await storage.setCachedMarketData(coins);
+        
+        res.json({
+          success: true,
+          data: {
+            coins,
+            stats: realMarketStats
+          }
+        });
+      } else {
+        throw new Error('No data received from Binance API');
       }
       
-      res.json({
-        success: true,
-        data: {
-          coins: marketData,
-          stats: marketStats
-        }
-      });
     } catch (error) {
-      res.status(500).json({ 
-        success: false, 
-        message: "Failed to fetch market data",
-        error: error instanceof Error ? error.message : "Unknown error"
+      console.error('Binance API failed:', error);
+      
+      // Fallback to stored data only if absolutely necessary
+      const coins = await storage.getMarketData();
+      const stats = await storage.getMarketStats();
+      
+      res.json({ 
+        success: true, 
+        data: { coins, stats },
+        note: 'Using fallback data due to API unavailability'
       });
     }
   });

@@ -13,6 +13,8 @@ export interface IStorage {
   getMarketData(): Promise<MarketData[]>;
   getMarketStats(): Promise<MarketStats>;
   updateMarketData(data: InsertMarketData[]): Promise<void>;
+  getCachedMarketData(): Promise<MarketData[] | null>;
+  setCachedMarketData(data: MarketData[]): Promise<void>;
   
   getNewsArticles(): Promise<NewsArticle[]>;
   getSentimentData(): Promise<SentimentData>;
@@ -24,6 +26,8 @@ export class MemStorage implements IStorage {
   private chatHistories: Map<string, ChatHistory>;
   private marketData: Map<string, MarketData>;
   private newsArticles: Map<string, NewsArticle>;
+  private cachedMarketData: MarketData[] | null = null;
+  private cacheTimestamp: number = 0;
 
   constructor() {
     this.users = new Map();
@@ -208,10 +212,27 @@ export class MemStorage implements IStorage {
   }
 
   async updateMarketData(data: InsertMarketData[]): Promise<void> {
+    // Clear existing data to replace with fresh data
+    this.marketData.clear();
+    
     data.forEach(item => {
       const id = randomUUID();
       this.marketData.set(id, { ...item, id, lastUpdated: new Date() });
     });
+  }
+
+  async getCachedMarketData(): Promise<MarketData[] | null> {
+    const now = Date.now();
+    // Cache for 1 minute to avoid excessive API calls
+    if (this.cachedMarketData && (now - this.cacheTimestamp) < 60000) {
+      return this.cachedMarketData;
+    }
+    return null;
+  }
+
+  async setCachedMarketData(data: MarketData[]): Promise<void> {
+    this.cachedMarketData = data;
+    this.cacheTimestamp = Date.now();
   }
 
   async getNewsArticles(): Promise<NewsArticle[]> {
