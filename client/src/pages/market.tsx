@@ -176,7 +176,7 @@ export default function Market() {
                 <span className="px-3 py-1 bg-electric/20 text-electric rounded-full text-sm">High Volume</span>
                 <span className="px-3 py-1 bg-neon/20 text-neon rounded-full text-sm">Institutional Interest</span>
               </div>
-              <p className="text-sm text-cool-gray italic">This is information, not financial advice.</p>
+
             </div>
           </GlassCard>
         </div>

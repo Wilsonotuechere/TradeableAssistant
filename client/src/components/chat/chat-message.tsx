@@ -25,11 +25,6 @@ export default function ChatMessageComponent({ message }: ChatMessageProps) {
         )}
       >
         <p className="whitespace-pre-wrap">{message.content}</p>
-        {!isUser && message.content.includes("This is information, not financial advice") && (
-          <p className="text-sm text-cool-gray italic mt-2">
-            This is information, not financial advice.
-          </p>
-        )}
       </div>
       
       {isUser && (

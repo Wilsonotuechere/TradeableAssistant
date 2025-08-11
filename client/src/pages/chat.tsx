@@ -12,7 +12,7 @@ export default function Chat() {
     {
       id: 'welcome',
       role: 'assistant',
-      content: "Hi! I'm your crypto trading assistant. I can help you understand market trends, analyze news sentiment, and explain complex trading concepts in simple terms.\n\nThis is information, not financial advice.",
+      content: "Hi! I'm your crypto trading assistant. I can help you understand market trends, analyze news sentiment, and explain complex trading concepts in simple terms.",
       timestamp: new Date().toISOString()
     }
   ]);

@@ -98,7 +98,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         aiResponse = "I'm here to help you understand cryptocurrency markets, analyze trends, and explain trading concepts in simple terms. You can ask me about specific cryptocurrencies, market sentiment, news analysis, or general trading education. What would you like to know?";
       }
 
-      aiResponse += "\n\nThis is information, not financial advice.";
+
 
       const userMessage: ChatMessage = {
         id: randomUUID(),
