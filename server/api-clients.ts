@@ -12,81 +12,50 @@ export class BinanceClient {
 
   async getTopCryptocurrencies(): Promise<any[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/ticker/24hr`);
+      // Use CoinGecko as primary source due to Binance regional restrictions
+      const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=8&page=1&sparkline=false');
       
       if (!response.ok) {
-        throw new Error(`Binance API error: ${response.status}`);
+        throw new Error(`CoinGecko API error: ${response.status}`);
       }
       
       const data = await response.json();
       
       if (!Array.isArray(data)) {
-        console.error('Binance API returned non-array data:', typeof data);
-        throw new Error('Invalid response format from Binance API');
+        throw new Error('Invalid response format from CoinGecko API');
       }
       
-      // Get top cryptocurrencies by volume (USDT pairs)
-      const usdtPairs = data.filter(coin => 
-        coin.symbol && coin.symbol.endsWith('USDT') && 
-        parseFloat(coin.volume) > 0
-      );
-      
-      const topCryptos = usdtPairs
-        .sort((a, b) => parseFloat(b.volume) - parseFloat(a.volume))
-        .slice(0, 8)
-        .map(coin => {
-          const symbol = coin.symbol.replace('USDT', '');
-          return {
-            symbol,
-            name: this.getSymbolName(symbol),
-            price: parseFloat(coin.lastPrice).toFixed(2),
-            priceChange24h: parseFloat(coin.priceChange).toFixed(2),
-            priceChangePercent24h: parseFloat(coin.priceChangePercent).toFixed(2),
-            volume24h: parseFloat(coin.volume).toFixed(0),
-            marketCap: (parseFloat(coin.lastPrice) * parseFloat(coin.volume)).toFixed(0)
-          };
-        });
+      const topCryptos = data.map(coin => ({
+        symbol: coin.symbol.toUpperCase(),
+        name: coin.name,
+        price: coin.current_price.toFixed(2),
+        priceChange24h: coin.price_change_24h?.toFixed(2) || '0.00',
+        priceChangePercent24h: coin.price_change_percentage_24h?.toFixed(2) || '0.00',
+        volume24h: coin.total_volume?.toFixed(0) || '0',
+        marketCap: coin.market_cap?.toFixed(0) || '0'
+      }));
 
-      console.log(`Successfully fetched ${topCryptos.length} cryptocurrencies from Binance`);
+      console.log(`Successfully fetched ${topCryptos.length} cryptocurrencies from CoinGecko`);
       return topCryptos;
     } catch (error) {
-      console.error('Binance API error:', error);
-      throw new Error('Failed to fetch market data from Binance');
+      console.error('CoinGecko API error:', error);
+      throw new Error('Failed to fetch market data from CoinGecko');
     }
   }
 
   async getMarketStats(): Promise<MarketStats> {
     try {
-      // Get BTC price
-      const btcResponse = await fetch(`${this.baseUrl}/ticker/price?symbol=BTCUSDT`);
-      if (!btcResponse.ok) {
-        throw new Error(`BTC price API error: ${btcResponse.status}`);
-      }
-      const btcData = await btcResponse.json();
+      // Use CoinGecko global data API for accurate market statistics
+      const globalResponse = await fetch('https://api.coingecko.com/api/v3/global');
       
-      // Get 24hr stats for major coins
-      const statsResponse = await fetch(`${this.baseUrl}/ticker/24hr`);
-      if (!statsResponse.ok) {
-        throw new Error(`24hr stats API error: ${statsResponse.status}`);
-      }
-      const statsData = await statsResponse.json();
-      
-      if (!Array.isArray(statsData)) {
-        throw new Error('Invalid stats data format');
+      if (!globalResponse.ok) {
+        throw new Error(`CoinGecko global API error: ${globalResponse.status}`);
       }
       
-      // Calculate total volume for USDT pairs
-      const usdtPairs = statsData.filter(coin => 
-        coin.symbol && coin.symbol.endsWith('USDT')
-      );
+      const globalData = await globalResponse.json() as any;
+      const data = globalData.data;
       
-      const totalVolume = usdtPairs.reduce((sum, coin) => {
-        const volume = parseFloat(coin.volume) || 0;
-        const price = parseFloat(coin.lastPrice) || 0;
-        return sum + (volume * price);
-      }, 0);
-
-      // Get Fear & Greed Index from alternative API
+      // Get Fear & Greed Index
       let fearGreedIndex = 65; // Default
       try {
         const fearGreedResponse = await fetch('https://api.alternative.me/fng/');
@@ -100,19 +69,12 @@ export class BinanceClient {
         console.warn('Fear & Greed API unavailable, using default');
       }
 
-      // Market cap estimation (simplified)
-      const estimatedMarketCap = totalVolume * 45; // Conservative multiplier
-      const btcPrice = parseFloat((btcData as any).price);
-      const btcSupply = 19700000; // Approximate circulating supply
-      const btcMarketCap = btcPrice * btcSupply;
-      const btcDominance = ((btcMarketCap / estimatedMarketCap) * 100).toFixed(1);
-
-      console.log('Successfully calculated market stats from Binance data');
+      console.log('Successfully fetched market stats from CoinGecko');
       
       return {
-        totalMarketCap: `$${(estimatedMarketCap / 1e12).toFixed(2)}T`,
-        totalVolume24h: `$${(totalVolume / 1e9).toFixed(1)}B`,
-        btcDominance: `${btcDominance}%`,
+        totalMarketCap: `$${(data.total_market_cap.usd / 1e12).toFixed(2)}T`,
+        totalVolume24h: `$${(data.total_volume.usd / 1e9).toFixed(1)}B`,
+        btcDominance: `${data.market_cap_percentage.btc.toFixed(1)}%`,
         fearGreedIndex
       };
     } catch (error) {
@@ -165,6 +127,105 @@ export class NewsClient {
       console.error('News API error:', error);
       throw new Error('Failed to fetch news data');
     }
+  }
+}
+
+export class AIClient {
+  async generateChatResponse(message: string, marketContext?: any): Promise<string> {
+    try {
+      // Use Hugging Face Inference API for text generation
+      const response = await fetch(
+        'https://api-inference.huggingface.co/models/microsoft/DialoGPT-large',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${HUGGINGFACE_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            inputs: this.buildPrompt(message, marketContext),
+            parameters: {
+              max_length: 200,
+              temperature: 0.7,
+              do_sample: true
+            }
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        console.warn(`AI API error: ${response.status}, using fallback response`);
+        return this.generateFallbackResponse(message, marketContext);
+      }
+
+      const result = await response.json() as any;
+      
+      if (Array.isArray(result) && result[0] && result[0].generated_text) {
+        let aiResponse = result[0].generated_text.replace(message, '').trim();
+        return aiResponse || this.generateFallbackResponse(message, marketContext);
+      }
+      
+      return this.generateFallbackResponse(message, marketContext);
+    } catch (error) {
+      console.warn('AI generation error, using fallback:', error);
+      return this.generateFallbackResponse(message, marketContext);
+    }
+  }
+
+  private buildPrompt(message: string, marketContext?: any): string {
+    let prompt = `You are a friendly crypto trading assistant. Answer crypto questions in simple terms.\n\n`;
+    
+    if (marketContext) {
+      prompt += `Current market data:\n`;
+      if (marketContext.topCoin) {
+        prompt += `- ${marketContext.topCoin.name} (${marketContext.topCoin.symbol}): $${marketContext.topCoin.price} (${marketContext.topCoin.priceChangePercent24h}%)\n`;
+      }
+      if (marketContext.stats) {
+        prompt += `- Total market cap: ${marketContext.stats.totalMarketCap}\n`;
+        prompt += `- BTC dominance: ${marketContext.stats.btcDominance}\n`;
+      }
+      prompt += `\n`;
+    }
+    
+    prompt += `Human: ${message}\nAssistant:`;
+    return prompt;
+  }
+
+  private generateFallbackResponse(message: string, marketContext?: any): string {
+    const lowerMessage = message.toLowerCase();
+    
+    // Bitcoin price queries
+    if (lowerMessage.includes('bitcoin') || lowerMessage.includes('btc')) {
+      if (marketContext?.topCoin && marketContext.topCoin.symbol === 'BTC') {
+        return `Bitcoin is currently trading at $${marketContext.topCoin.price}, with a 24-hour change of ${marketContext.topCoin.priceChangePercent24h}%. Bitcoin remains the dominant cryptocurrency and often sets the trend for the broader market.`;
+      }
+      return "Bitcoin is the world's first and most valuable cryptocurrency. It's often considered digital gold and a store of value. Current prices can be found on the Market page.";
+    }
+    
+    // Ethereum queries
+    if (lowerMessage.includes('ethereum') || lowerMessage.includes('eth')) {
+      return "Ethereum is a blockchain platform that enables smart contracts and decentralized applications (dApps). ETH is used to pay for transactions and computational services on the network.";
+    }
+    
+    // General market queries
+    if (lowerMessage.includes('market') || lowerMessage.includes('price')) {
+      if (marketContext?.stats) {
+        return `The crypto market is showing a total market cap of ${marketContext.stats.totalMarketCap} with Bitcoin maintaining ${marketContext.stats.btcDominance} dominance. Check the Market page for detailed price information.`;
+      }
+      return "The cryptocurrency market operates 24/7 and is known for its volatility. You can check current prices and market trends on the Market page.";
+    }
+    
+    // Investment advice (avoid giving financial advice)
+    if (lowerMessage.includes('invest') || lowerMessage.includes('buy') || lowerMessage.includes('sell')) {
+      return "I can't provide investment advice, but I can help you understand how cryptocurrencies work. Always do your own research and never invest more than you can afford to lose.";
+    }
+    
+    // General crypto education
+    if (lowerMessage.includes('what') || lowerMessage.includes('how') || lowerMessage.includes('explain')) {
+      return "Cryptocurrency is digital money secured by cryptography and blockchain technology. Each crypto has unique features and use cases. Would you like to know about a specific cryptocurrency?";
+    }
+    
+    return "I'm here to help you understand cryptocurrency markets in simple terms. You can ask me about specific coins, market trends, or how crypto technology works!";
   }
 }
 
@@ -274,3 +335,4 @@ export const binanceClient = new BinanceClient();
 export const newsClient = new NewsClient();
 export const sentimentClient = new SentimentClient();
 export const twitterClient = new TwitterClient();
+export const aiClient = new AIClient();
