@@ -4,13 +4,26 @@ import { storage } from "./storage";
 import { insertChatHistorySchema } from "@shared/schema";
 import type { ChatMessage } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { binanceClient, newsClient, sentimentClient, twitterClient } from "./api-clients";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Market data routes
   app.get("/api/market", async (req, res) => {
     try {
-      const marketData = await storage.getMarketData();
-      const marketStats = await storage.getMarketStats();
+      // Try to fetch real data from Binance API first
+      let marketData, marketStats;
+      
+      try {
+        console.log('Fetching real market data from Binance...');
+        marketData = await binanceClient.getTopCryptocurrencies();
+        marketStats = await binanceClient.getMarketStats();
+        console.log('Successfully fetched real market data');
+      } catch (apiError) {
+        console.warn('Binance API failed, falling back to mock data:', apiError);
+        // Fallback to stored mock data
+        marketData = await storage.getMarketData();
+        marketStats = await storage.getMarketStats();
+      }
       
       res.json({
         success: true,
@@ -31,8 +44,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // News and sentiment routes
   app.get("/api/news", async (req, res) => {
     try {
-      const articles = await storage.getNewsArticles();
-      const sentiment = await storage.getSentimentData();
+      let articles, sentiment;
+      
+      try {
+        console.log('Fetching real news data from News API...');
+        const newsArticles = await newsClient.getCryptoNews();
+        
+        // Analyze sentiment for the news articles
+        console.log('Analyzing sentiment with AI...');
+        sentiment = await sentimentClient.calculateOverallSentiment(newsArticles);
+        
+        // Add sentiment to individual articles
+        articles = await Promise.all(
+          newsArticles.slice(0, 8).map(async (article) => {
+            const articleSentiment = await sentimentClient.analyzeSentiment(article.title);
+            return {
+              id: randomUUID(),
+              ...article,
+              sentiment: articleSentiment,
+              createdAt: new Date()
+            };
+          })
+        );
+        
+        console.log('Successfully fetched and analyzed real news data');
+      } catch (apiError) {
+        console.warn('News API failed, falling back to mock data:', apiError);
+        articles = await storage.getNewsArticles();
+        sentiment = await storage.getSentimentData();
+      }
       
       res.json({
         success: true,
@@ -62,40 +102,106 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Simulate AI response with context about crypto markets
+      // AI response with real-time market context
       let aiResponse = "";
       const lowerMessage = message.toLowerCase();
       
+      // Fetch real-time data for context
+      let marketData, marketStats, sentiment;
+      try {
+        marketData = await binanceClient.getTopCryptocurrencies();
+        marketStats = await binanceClient.getMarketStats();
+        
+        const newsArticles = await newsClient.getCryptoNews();
+        sentiment = await sentimentClient.calculateOverallSentiment(newsArticles);
+      } catch (error) {
+        // Fallback to stored data
+        marketData = await storage.getMarketData();
+        marketStats = await storage.getMarketStats();
+        sentiment = await storage.getSentimentData();
+      }
+      
       if (lowerMessage.includes('bitcoin') || lowerMessage.includes('btc')) {
-        const marketData = await storage.getMarketData();
-        const btcData = marketData.find(coin => coin.symbol === 'BTC');
+        const btcData = marketData.find((coin: any) => coin.symbol === 'BTC');
         
-        aiResponse = `Based on current market data, Bitcoin is trading at $${btcData?.price} with a ${btcData?.priceChangePercent24h}% change in the last 24 hours. `;
+        aiResponse = `Bitcoin is currently trading at $${btcData?.price} with a ${btcData?.priceChangePercent24h}% change in the last 24 hours. `;
         
-        if (parseFloat(btcData?.priceChangePercent24h || "0") > 0) {
-          aiResponse += "The positive momentum suggests increased institutional interest and market confidence. ";
+        const priceChange = parseFloat(btcData?.priceChangePercent24h || "0");
+        if (priceChange > 2) {
+          aiResponse += "This strong upward movement often indicates renewed institutional interest and positive market sentiment. ";
+        } else if (priceChange < -2) {
+          aiResponse += "The decline might be temporary consolidation after recent gains, which is normal in volatile markets. ";
         } else {
-          aiResponse += "The current price action shows some consolidation, which is normal after recent gains. ";
+          aiResponse += "The price is showing relatively stable movement, suggesting market equilibrium. ";
         }
         
-        aiResponse += "Bitcoin continues to be the leading cryptocurrency by market cap and often drives overall market sentiment.";
+        aiResponse += `With Bitcoin dominance at ${marketStats.btcDominance}, it continues to lead the cryptocurrency market and influence overall sentiment.`;
       } else if (lowerMessage.includes('ethereum') || lowerMessage.includes('eth')) {
-        const marketData = await storage.getMarketData();
-        const ethData = marketData.find(coin => coin.symbol === 'ETH');
+        const ethData = marketData.find((coin: any) => coin.symbol === 'ETH');
         
-        aiResponse = `Ethereum is currently priced at $${ethData?.price} with a ${ethData?.priceChangePercent24h}% change today. The Ethereum network continues to process high transaction volumes, indicating strong adoption of DeFi and smart contract applications.`;
+        aiResponse = `Ethereum is trading at $${ethData?.price} with a ${ethData?.priceChangePercent24h}% change today. `;
+        
+        const priceChange = parseFloat(ethData?.priceChangePercent24h || "0");
+        if (priceChange > 0) {
+          aiResponse += "The positive movement reflects continued adoption of DeFi applications and smart contracts on the Ethereum network. ";
+        } else {
+          aiResponse += "Despite any short-term price fluctuations, Ethereum's ecosystem continues to show strong development activity. ";
+        }
+        
+        aiResponse += "The network processes high transaction volumes daily, indicating robust usage across decentralized applications.";
       } else if (lowerMessage.includes('market') || lowerMessage.includes('overview')) {
-        const marketStats = await storage.getMarketStats();
-        aiResponse = `The overall crypto market cap is ${marketStats.totalMarketCap} with ${marketStats.totalVolume24h} in 24-hour volume. Bitcoin dominance stands at ${marketStats.btcDominance}. The Fear & Greed Index is at ${marketStats.fearGreedIndex}, indicating ${marketStats.fearGreedIndex > 50 ? 'greed' : 'fear'} in the market sentiment.`;
+        aiResponse = `The crypto market shows a total market cap of ${marketStats.totalMarketCap} with ${marketStats.totalVolume24h} in daily trading volume. `;
+        aiResponse += `Bitcoin maintains ${marketStats.btcDominance} market dominance. `;
+        
+        if (sentiment.mood === 'bullish') {
+          aiResponse += `Current news sentiment is ${sentiment.mood} with ${sentiment.positive}% positive coverage, suggesting optimistic market conditions.`;
+        } else if (sentiment.mood === 'bearish') {
+          aiResponse += `News sentiment appears ${sentiment.mood} with ${sentiment.negative}% negative coverage, indicating cautious market conditions.`;
+        } else {
+          aiResponse += `Market sentiment is ${sentiment.mood} with balanced news coverage, suggesting stable market conditions.`;
+        }
       } else if (lowerMessage.includes('news') || lowerMessage.includes('sentiment')) {
-        const sentiment = await storage.getSentimentData();
-        aiResponse = `Current market sentiment analysis shows ${sentiment.positive}% positive, ${sentiment.neutral}% neutral, and ${sentiment.negative}% negative news coverage. The overall market mood is ${sentiment.mood}. Recent news highlights institutional adoption and regulatory developments.`;
+        aiResponse = `Current market sentiment analysis shows ${sentiment.positive}% positive, ${sentiment.neutral}% neutral, and ${sentiment.negative}% negative news coverage. `;
+        aiResponse += `The overall market mood is ${sentiment.mood}. `;
+        
+        if (sentiment.mood === 'bullish') {
+          aiResponse += "Recent headlines focus on institutional adoption, regulatory clarity, and technological developments driving optimism.";
+        } else if (sentiment.mood === 'bearish') {
+          aiResponse += "Recent news includes concerns about market volatility, regulatory challenges, or technical issues affecting sentiment.";
+        } else {
+          aiResponse += "News coverage shows balanced perspectives on market developments, regulatory updates, and technological progress.";
+        }
+      } else if (lowerMessage.includes('price') || lowerMessage.includes('how much')) {
+        // Extract potential crypto symbols from the message
+        const cryptoMentions = marketData.filter((coin: any) => 
+          lowerMessage.includes(coin.symbol.toLowerCase()) || lowerMessage.includes(coin.name.toLowerCase())
+        );
+        
+        if (cryptoMentions.length > 0) {
+          const coin = cryptoMentions[0];
+          aiResponse = `${coin.name} (${coin.symbol}) is currently priced at $${coin.price} with a ${coin.priceChangePercent24h}% change in the last 24 hours. `;
+          
+          const priceChange = parseFloat(coin.priceChangePercent24h);
+          if (priceChange > 0) {
+            aiResponse += "The positive momentum suggests active buying interest and market confidence in this cryptocurrency.";
+          } else {
+            aiResponse += "The price movement reflects normal market fluctuations, which are common in the cryptocurrency space.";
+          }
+        } else {
+          aiResponse = `I can provide current prices for major cryptocurrencies. Try asking about specific coins like Bitcoin, Ethereum, Solana, or others from the top market cap rankings.`;
+        }
       } else if (lowerMessage.includes('defi') || lowerMessage.includes('yield')) {
-        aiResponse = "DeFi (Decentralized Finance) continues to innovate with new yield farming strategies and lending protocols. Recent developments show increased efficiency in earning passive income while maintaining security standards. Popular DeFi tokens have shown strong performance alongside growing total value locked (TVL) in protocols.";
+        aiResponse = "DeFi (Decentralized Finance) represents a growing ecosystem of financial applications built on blockchain networks, primarily Ethereum. ";
+        aiResponse += "Current yield farming strategies offer various APY rates, though they come with smart contract risks and impermanent loss considerations. ";
+        aiResponse += "Popular DeFi protocols continue to innovate with new lending mechanisms, automated market makers, and liquidity mining opportunities.";
       } else if (lowerMessage.includes('trading') || lowerMessage.includes('strategy')) {
-        aiResponse = "For beginner traders, it's essential to understand key concepts like dollar-cost averaging, risk management, and market analysis. Never invest more than you can afford to lose, and always do your own research. Consider starting with well-established cryptocurrencies like Bitcoin and Ethereum before exploring altcoins.";
+        aiResponse = "Successful crypto trading requires understanding market analysis, risk management, and emotional discipline. ";
+        aiResponse += "Key strategies include dollar-cost averaging for long-term positions, setting stop-losses for risk management, and never investing more than you can afford to lose. ";
+        aiResponse += "Consider starting with established cryptocurrencies and gradually learning about technical analysis, market cycles, and portfolio diversification.";
       } else {
-        aiResponse = "I'm here to help you understand cryptocurrency markets, analyze trends, and explain trading concepts in simple terms. You can ask me about specific cryptocurrencies, market sentiment, news analysis, or general trading education. What would you like to know?";
+        aiResponse = "I can help you understand cryptocurrency markets, analyze current price movements, and explain trading concepts in simple terms. ";
+        aiResponse += "You can ask me about specific cryptocurrencies, market sentiment, news analysis, trading strategies, or general education about blockchain technology. ";
+        aiResponse += "What specific aspect of crypto markets interests you most?";
       }
 
 
