@@ -4,64 +4,38 @@ import { storage } from "./storage";
 import { insertChatHistorySchema } from "@shared/schema";
 import type { ChatMessage } from "@shared/schema";
 import { randomUUID } from "crypto";
-import { binanceClient, newsClient, sentimentClient, twitterClient, aiClient } from "./api-clients";
+import {
+  binanceClient,
+  newsClient,
+  sentimentClient,
+  twitterClient,
+  aiClient,
+  multiModelService,
+} from "./api-clients";
+import { MarketService } from "./services/market-service";
+import type {
+  DetailedMarketData,
+  MarketStats,
+} from "../shared/types/market-data";
+import type { ModelContribution } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Market data routes
+  const marketService = MarketService.getInstance();
+
   app.get("/api/market", async (req, res) => {
     try {
-      // Check cache first
-      const cachedData = await storage.getCachedMarketData();
-      if (cachedData && cachedData.length > 0) {
-        const stats = await storage.getMarketStats();
-        return res.json({ success: true, data: { coins: cachedData, stats } });
-      }
-
-      console.log('Fetching real market data from Binance...');
-      
-      // Fetch real data from Binance API
-      const [realMarketData, realMarketStats] = await Promise.all([
-        binanceClient.getTopCryptocurrencies(),
-        binanceClient.getMarketStats()
-      ]);
-      
-      if (realMarketData && realMarketData.length > 0) {
-        // Update storage with real data
-        await storage.updateMarketData(realMarketData.map(coin => ({
-          symbol: coin.symbol,
-          name: coin.name,
-          price: coin.price,
-          priceChange24h: coin.priceChange24h,
-          priceChangePercent24h: coin.priceChangePercent24h,
-          volume24h: coin.volume24h,
-          marketCap: coin.marketCap
-        })));
-        
-        const coins = await storage.getMarketData();
-        await storage.setCachedMarketData(coins);
-        
-        res.json({
-          success: true,
-          data: {
-            coins,
-            stats: realMarketStats
-          }
-        });
-      } else {
-        throw new Error('No data received from Binance API');
-      }
-      
+      const marketData = await marketService.getMarketData();
+      res.json({
+        success: true,
+        data: marketData,
+      });
     } catch (error) {
-      console.error('Binance API failed:', error);
-      
-      // Fallback to stored data only if absolutely necessary
-      const coins = await storage.getMarketData();
-      const stats = await storage.getMarketStats();
-      
-      res.json({ 
-        success: true, 
-        data: { coins, stats },
-        note: 'Using fallback data due to API unavailability'
+      console.error("Market data fetch failed:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch market data",
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
@@ -70,47 +44,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/news", async (req, res) => {
     try {
       let articles, sentiment;
-      
+
       try {
-        console.log('Fetching real news data from News API...');
+        console.log("Fetching real news data from News API...");
         const newsArticles = await newsClient.getCryptoNews();
-        
+
         // Analyze sentiment for the news articles
-        console.log('Analyzing sentiment with AI...');
-        sentiment = await sentimentClient.calculateOverallSentiment(newsArticles);
-        
+        console.log("Analyzing sentiment with AI...");
+        sentiment = await sentimentClient.calculateOverallSentiment(
+          newsArticles
+        );
+
         // Add sentiment to individual articles
         articles = await Promise.all(
           newsArticles.slice(0, 8).map(async (article) => {
-            const articleSentiment = await sentimentClient.analyzeSentiment(article.title);
+            const articleSentiment = await sentimentClient.analyzeSentiment(
+              article.title
+            );
             return {
               id: randomUUID(),
               ...article,
               sentiment: articleSentiment,
-              createdAt: new Date()
+              createdAt: new Date(),
             };
           })
         );
-        
-        console.log('Successfully fetched and analyzed real news data');
+
+        console.log("Successfully fetched and analyzed real news data");
       } catch (apiError) {
-        console.warn('News API failed, falling back to mock data:', apiError);
+        console.warn("News API failed, falling back to mock data:", apiError);
         articles = await storage.getNewsArticles();
         sentiment = await storage.getSentimentData();
       }
-      
+
       res.json({
         success: true,
         data: {
           articles,
-          sentiment
-        }
+          sentiment,
+        },
       });
     } catch (error) {
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         message: "Failed to fetch news data",
-        error: error instanceof Error ? error.message : "Unknown error"
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
@@ -119,63 +97,94 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/chat", async (req, res) => {
     try {
       const { message, conversationId } = req.body;
-      
-      if (!message || typeof message !== 'string') {
+
+      if (!message || typeof message !== "string") {
         return res.status(400).json({
           success: false,
-          message: "Message is required"
+          message: "Message is required",
         });
       }
 
-      console.log('Generating AI response with market context...');
-      
+      console.log("Generating AI response with market context...");
+
       // Fetch real-time data for market context
       let marketContext = {};
       try {
         const [marketData, marketStats] = await Promise.all([
           binanceClient.getTopCryptocurrencies(),
-          binanceClient.getMarketStats()
+          binanceClient.getMarketStats(),
         ]);
-        
+
         marketContext = {
           topCoin: marketData[0], // Bitcoin or top coin
           stats: marketStats,
-          coins: marketData.slice(0, 3) // Top 3 coins for context
+          coins: marketData.slice(0, 3), // Top 3 coins for context
         };
       } catch (error) {
-        console.warn('Failed to fetch real-time market data for context:', error);
+        console.warn(
+          "Failed to fetch real-time market data for context:",
+          error
+        );
         // Use stored data as fallback
         const coins = await storage.getMarketData();
         const stats = await storage.getMarketStats();
         marketContext = {
           topCoin: coins[0],
           stats,
-          coins: coins.slice(0, 3)
+          coins: coins.slice(0, 3),
         };
       }
-      
-      // Generate AI response with market context
-      const aiResponse = await aiClient.generateChatResponse(message, marketContext);
-      console.log('Successfully generated AI response');
 
-      // Create chat message response
+      // Generate AI response using multi-model service
+      const ensembleResponse = await multiModelService.generateEnsembleResponse(
+        message,
+        marketContext,
+        {
+          useGemini: true,
+          useFinancialBert: true,
+          useCryptoBert: true,
+          useNewsAnalysis: true,
+          weightingStrategy: "confidence",
+        }
+      );
+      const aiResponse = ensembleResponse.finalResponse;
+      console.log("Successfully generated AI response");
+
+      // Create chat message response with model contributions
       const response: ChatMessage = {
         id: randomUUID(),
-        role: 'assistant',
+        role: "assistant",
         content: aiResponse,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        intent: "AI_RESPONSE",
+        metadata: {
+          ensembleDetails: {
+            consensusScore: ensembleResponse.consensusScore,
+            processingTime: ensembleResponse.totalProcessingTime,
+            modelsUsed: ensembleResponse.modelContributions.map((m) => ({
+              name: m.source,
+              confidence: m.confidence,
+              processingTime: m.processingTime,
+              strengths: Array.isArray(m.data?.strengths)
+                ? m.data.strengths
+                : [],
+            })),
+          },
+          modelContributions: ensembleResponse.modelContributions,
+          methodology: ensembleResponse.methodology,
+        },
       };
 
       res.json({
         success: true,
-        data: { message: response }
+        data: { message: response },
       });
     } catch (error) {
-      console.error('Chat error:', error);
+      console.error("Chat error:", error);
       res.status(500).json({
         success: false,
         message: "Failed to generate response",
-        error: error instanceof Error ? error.message : "Unknown error"
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
@@ -186,13 +195,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const history = await storage.getChatHistory();
       res.json({
         success: true,
-        data: history
+        data: history,
       });
     } catch (error) {
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         message: "Failed to fetch chat history",
-        error: error instanceof Error ? error.message : "Unknown error"
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
@@ -201,16 +210,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const validatedData = insertChatHistorySchema.parse(req.body);
       const chatHistory = await storage.createChatHistory(validatedData);
-      
+
       res.json({
         success: true,
-        data: chatHistory
+        data: chatHistory,
       });
     } catch (error) {
-      res.status(400).json({ 
-        success: false, 
+      res.status(400).json({
+        success: false,
         message: "Failed to save chat history",
-        error: error instanceof Error ? error.message : "Invalid data"
+        error: error instanceof Error ? error.message : "Invalid data",
       });
     }
   });
@@ -222,16 +231,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const chat of history) {
         await storage.deleteChatHistory(chat.id);
       }
-      
+
       res.json({
         success: true,
-        message: "Chat history cleared successfully"
+        message: "Chat history cleared successfully",
       });
     } catch (error) {
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         message: "Failed to clear chat history",
-        error: error instanceof Error ? error.message : "Unknown error"
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });

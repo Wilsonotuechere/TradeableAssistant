@@ -1,0 +1,302 @@
+import { useEffect, useRef } from "react";
+import {
+  Chart,
+  LinearScale,
+  CategoryScale,
+  BarElement,
+  PointElement,
+  LineElement,
+  Legend,
+  Title,
+  Tooltip,
+  TimeScale,
+  ChartOptions,
+  ChartConfiguration,
+  Scale,
+  CoreScaleOptions,
+  TooltipItem,
+  ChartType,
+} from "chart.js";
+import {
+  CandlestickController,
+  CandlestickElement,
+} from "chartjs-chart-financial";
+import "chartjs-adapter-date-fns";
+import { DeepPartial } from "chart.js/types/utils";
+
+Chart.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  PointElement,
+  LineElement,
+  Legend,
+  Title,
+  Tooltip,
+  TimeScale,
+  CandlestickController,
+  CandlestickElement
+);
+
+interface CandleData {
+  x: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+}
+
+interface TimeValueData {
+  x: number;
+  y: number;
+}
+
+interface CustomDataset {
+  type: ChartType;
+  label: string;
+  data: CandleData[] | TimeValueData[];
+  borderColor?: string | { up: string; down: string };
+  backgroundColor?: string | { up: string; down: string };
+  borderWidth?: number;
+  borderDash?: number[];
+  fill?: boolean;
+  yAxisID?: string;
+}
+
+interface CustomChartConfig extends DeepPartial<ChartConfiguration> {
+  type: ChartType;
+  data: {
+    datasets: CustomDataset[];
+  };
+  options: ChartOptions;
+}
+
+interface PriceChartProps {
+  data: {
+    symbol: string;
+    interval: string;
+    candles: Array<{
+      time: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    }>;
+    indicators: {
+      rsi: number;
+      sma20: number;
+      priceChange24h: number;
+      volumeChange24h: number;
+    };
+    lastUpdated: string;
+  };
+  isLoading: boolean;
+  error: Error | null;
+  onSelectCoin?: (symbol: string) => void;
+}
+
+export default function PriceChart({
+  data,
+  isLoading,
+  error,
+  onSelectCoin,
+}: PriceChartProps) {
+  const chartRef = useRef<HTMLCanvasElement>(null);
+  const chartInstance = useRef<Chart | null>(null);
+
+  useEffect(() => {
+    if (!chartRef.current || isLoading || !data?.candles?.length) return;
+
+    if (chartInstance.current) {
+      chartInstance.current.destroy();
+    }
+
+    const canvas = chartRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const chartConfig: CustomChartConfig = {
+      type: "candlestick",
+      data: {
+      datasets: [
+        {
+        type: "candlestick" as const,
+        label: "Price",
+        data: data.candles.map((d) => ({
+          x: d.time,
+          o: d.open,
+          h: d.high,
+          l: d.low,
+          c: d.close,
+        })),
+        borderColor: {
+          up: "#22c55e",
+          down: "#ef4444",
+        } as any,
+        backgroundColor: {
+          up: "rgba(34, 197, 94, 0.2)",
+          down: "rgba(239, 68, 68, 0.2)",
+        } as any,
+        } as any,
+        {
+        type: "line" as const,
+        label: "SMA20",
+        data: data.candles.map((d) => ({
+          x: d.time,
+          y: data.indicators.sma20,
+        })),
+        borderColor: "#60a5fa",
+        borderWidth: 1.5,
+        borderDash: [3, 3],
+        fill: false,
+        yAxisID: "price",
+        } as any,
+        {
+        type: "bar" as const,
+        label: "Volume",
+        data: data.candles.map((d) => ({
+          x: d.time,
+          y: d.volume,
+        })),
+        backgroundColor: "rgba(155, 93, 229, 0.2)",
+        borderColor: "rgba(155, 93, 229, 0.8)",
+        borderWidth: 1,
+        yAxisID: "volume",
+        } as any,
+      ],
+      },
+      options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      onClick: function(event, elements) {
+        if (elements.length && onSelectCoin) {
+        onSelectCoin(data.symbol);
+        }
+      },
+      interaction: {
+        mode: "index",
+        intersect: false,
+      },
+      scales: {
+        x: {
+        type: "time",
+        time: {
+          unit: data.interval === "1h" ? "minute" : "hour",
+          displayFormats: {
+          minute: "HH:mm",
+          hour: "dd HH:mm",
+          },
+        },
+        grid: {
+          color: "rgba(156, 163, 175, 0.1)",
+        },
+        ticks: {
+          color: "#9ca3af",
+          maxRotation: 0,
+        },
+        },
+        price: {
+        type: "linear",
+        position: "right",
+        grid: {
+          color: "rgba(156, 163, 175, 0.1)",
+        },
+        ticks: {
+          color: "#9ca3af",
+          callback: function (
+          this: Scale<CoreScaleOptions>,
+          value: string | number
+          ) {
+          return "$" + Number(value).toLocaleString();
+          },
+        },
+        },
+        volume: {
+        type: "linear",
+        position: "left",
+        grid: {
+          display: false,
+        },
+        ticks: {
+          color: "#9ca3af",
+          callback: function (
+          this: Scale<CoreScaleOptions>,
+          value: string | number
+          ) {
+          return `${(Number(value) / 1e6).toFixed(2)}M`;
+          },
+          },
+          },
+        },
+        plugins: {
+          legend: {
+          display: true,
+          position: "top" as const,
+          labels: {
+            color: "#9ca3af",
+            filter: (item: { text: string }) => item.text !== "Price",
+          },
+          },
+          tooltip: {
+          mode: "index" as const,
+          intersect: false,
+          callbacks: {
+            label: function(context) {
+            const raw = context.raw as { y?: number; o?: number; h?: number; l?: number; c?: number };
+            if (context.dataset.label === "Volume") {
+              return `Volume: ${(raw.y! / 1e6).toFixed(2)}M`;
+            }
+            if (context.dataset.label === "SMA20") {
+              return `SMA20: $${raw.y!.toLocaleString()}`;
+            }
+            if (raw.c) {
+              return [
+              `Open: $${raw.o!.toLocaleString()}`,
+              `High: $${raw.h!.toLocaleString()}`,
+              `Low: $${raw.l!.toLocaleString()}`,
+              `Close: $${raw.c.toLocaleString()}`,
+              ];
+            }
+            return "";
+            },
+          },
+          },
+        },
+      },
+      },
+    };
+
+    chartInstance.current = new Chart(ctx, chartConfig as ChartConfiguration);
+
+    return () => {
+      if (chartInstance.current) {
+        chartInstance.current.destroy();
+      }
+    };
+  }, [data?.candles, data?.indicators?.sma20, data?.interval, data?.symbol, isLoading]);
+
+  if (error) {
+    return (
+      <div className="h-full flex items-center justify-center text-red-500">
+        Error loading chart data: {error.message}
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-sm text-muted-foreground">
+          Loading chart data...
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full">
+      <canvas ref={chartRef} />
+    </div>
+  );
+}
