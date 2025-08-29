@@ -1,57 +1,149 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  TrendingUp,
-  TrendingDown,
-  PieChart,
-  BarChart3,
-  Thermometer,
-} from "lucide-react";
+import { Bot, PieChart, BarChart3, Thermometer } from "lucide-react";
 import GlassCard from "@/components/ui/glass-card";
 import PriceChart from "@/components/market/price-chart";
 import MarketSummary from "@/components/market/market-summary";
-import { Bot } from "lucide-react";
-import { useState, useEffect } from "react";
-
-interface Coin {
-  symbol: string;
-  name: string;
-  price: string;
-  priceChangePercent24h: string;
-  volume24h: string;
-  marketCap: string;
-  candles?: Array<{
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-  }>;
-}
-
-interface MarketData {
-  data: {
-    coins: Coin[];
-    stats: {
-      totalMarketCap: string;
-      totalVolume24h: string;
-      btcDominance: string;
-      fearGreedIndex: string;
-    };
-  };
-}
-
 import { useMarketData } from "@/hooks/use-market-data";
+import { NoDataMessage } from "@/components/market/no-data-message";
+import type {
+  Coin,
+  MarketData,
+  MarketStats,
+  Candle,
+  ChartData,
+} from "@/types/market";
+
+// Market Stats Card Component
+
+// Market Stats Card Component
+const MarketStatCard = ({
+  title,
+  value,
+  change,
+  icon: Icon,
+  iconClass = "text-electric",
+}: {
+  title: string;
+  value: string;
+  change?: string;
+  icon: any;
+  iconClass?: string;
+}) => (
+  <GlassCard className="p-6 transform hover:scale-[1.02] transition-transform">
+    <div className="flex items-center justify-between mb-2">
+      <span className="text-cool-gray text-sm font-medium">{title}</span>
+      <div
+        className={`w-8 h-8 rounded-lg flex items-center justify-center ${iconClass}`}
+      >
+        <Icon size={18} />
+      </div>
+    </div>
+    <div className="font-mono font-semibold text-2xl number-roll tracking-tight">
+      {value}
+    </div>
+    {change && (
+      <div
+        className={`text-sm mt-1 ${
+          change.startsWith("+") ? "text-emerald" : "text-red-400"
+        }`}
+      >
+        {change}
+      </div>
+    )}
+  </GlassCard>
+);
+
+// Coin List Item Component
+const CoinListItem = ({
+  coin,
+  isSelected,
+  onClick,
+}: {
+  coin: Coin;
+  isSelected: boolean;
+  onClick: () => void;
+}) => (
+  <div
+    className={`flex items-center justify-between p-4 bg-white/5 rounded-xl hover:bg-white/10 transition-all cursor-pointer border border-transparent ${
+      isSelected ? "border-electric/50 bg-white/10" : ""
+    }`}
+    onClick={onClick}
+  >
+    <div className="flex items-center space-x-3 min-w-0">
+      <div
+        className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center ${
+          coin.symbol === "BTC"
+            ? "bg-amber"
+            : coin.symbol === "ETH"
+            ? "bg-blue-500"
+            : coin.symbol === "SOL"
+            ? "bg-purple-500"
+            : "bg-gradient-to-br from-electric to-neon"
+        }`}
+      >
+        <span className="text-white text-sm font-bold">
+          {coin.symbol.slice(0, 2)}
+        </span>
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-medium truncate" title={coin.name}>
+          {coin.name}
+        </div>
+        <div className="text-cool-gray text-sm flex items-center space-x-2">
+          <span>{coin.symbol}</span>
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-cool-gray/30"></span>
+          <span
+            className={
+              Number(coin.priceChangePercent24h || "0") >= 0
+                ? "text-emerald"
+                : "text-red-400"
+            }
+          >
+            {Number(coin.priceChangePercent24h || "0") >= 0 ? "+" : ""}
+            {Number(coin.priceChangePercent24h || "0").toFixed(2)}%
+          </span>
+        </div>
+      </div>
+    </div>
+    <div className="text-right flex-shrink-0 ml-4">
+      <div className="font-mono font-medium">
+        ${Number(coin.price || "0").toLocaleString()}
+      </div>
+      <div className="text-sm text-cool-gray">
+        Vol: ${(Number(coin.volume24h || "0") / 1e6).toFixed(2)}M
+      </div>
+    </div>
+  </div>
+);
 
 export default function Market() {
-  const { data, isLoading, error } = useMarketData();
-
+  const { data, isLoading, error, isError, refetch } = useMarketData();
   const [selectedCoin, setSelectedCoin] = useState<Coin | null>(null);
+  const [timeframe, setTimeframe] = useState<"24H" | "7D" | "30D">("24H");
 
   // Update selected coin when data changes if none is selected
   useEffect(() => {
-    if (!selectedCoin && data?.data?.coins && data.data.coins.length > 0) {
-      setSelectedCoin(data.data.coins[0]);
+    if (data?.data?.coins && data.data.coins.length > 0) {
+      // If no coin is selected or the selected coin is not in the updated list
+
+      if (
+        !selectedCoin ||
+        !data.data.coins.find((c: Coin) => c.symbol === selectedCoin.symbol)
+      ) {
+        setSelectedCoin(data.data.coins[0]);
+      } else {
+        // Update the selected coin's data
+        const updatedCoin: Coin | undefined = data.data.coins.find(
+          (c: Coin) => c.symbol === selectedCoin.symbol
+        );
+        if (
+          updatedCoin &&
+          JSON.stringify(updatedCoin) !== JSON.stringify(selectedCoin)
+        ) {
+          setSelectedCoin(updatedCoin);
+        }
+      }
     }
   }, [data, selectedCoin]);
 
@@ -72,14 +164,22 @@ export default function Market() {
     );
   }
 
-  if (error) {
+  if (isError) {
     return (
       <div className="pt-20">
         <div className="max-w-7xl mx-auto px-6 py-8">
           <GlassCard className="p-8 text-center">
             <p className="text-red-400">
-              Failed to load market data. Please try again later.
+              {error instanceof Error
+                ? error.message
+                : "Failed to load market data."}
             </p>
+            <button
+              onClick={() => refetch()}
+              className="mt-4 px-4 py-2 bg-electric/20 hover:bg-electric/30 text-white rounded-lg transition-colors"
+            >
+              Try Again
+            </button>
           </GlassCard>
         </div>
       </div>
@@ -90,304 +190,243 @@ export default function Market() {
   const coins = data?.data?.coins || [];
 
   return (
-    <div className="pt-20">
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        <div className="mb-8">
-          <h1 className="font-grotesk font-bold text-3xl mb-2">
+    <div className="min-h-screen bg-gradient-to-b from-navy-900 to-navy-950">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
+        {/* Header Section */}
+        <div className="mb-8 space-y-2">
+          <h1 className="font-grotesk font-bold text-4xl bg-gradient-to-r from-white to-cool-gray bg-clip-text text-transparent">
             Market Overview
           </h1>
-          <p className="text-cool-gray">
+          <p className="text-cool-gray/80 text-lg">
             Real-time cryptocurrency market data and analysis
           </p>
         </div>
 
-        {/* Market Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <GlassCard className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-cool-gray">Market Cap</span>
-              <PieChart className="text-electric" size={20} />
-            </div>
-            <div className="font-mono font-semibold text-2xl number-roll">
-              {marketStats?.totalMarketCap || "$1.73T"}
-            </div>
-            <div className="text-emerald text-sm">+2.4% 24h</div>
-          </GlassCard>
+        {/* Market Stats Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6 mb-8">
+          <MarketStatCard
+            title="Market Cap"
+            value={marketStats?.totalMarketCap || "$1.73T"}
+            change="+2.4% 24h"
+            icon={PieChart}
+            iconClass="text-electric bg-electric/10"
+          />
 
-          <GlassCard className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-cool-gray">24h Volume</span>
-              <BarChart3 className="text-neon" size={20} />
-            </div>
-            <div className="font-mono font-semibold text-2xl number-roll">
-              {marketStats?.totalVolume24h || "$86.2B"}
-            </div>
-            <div className="text-emerald text-sm">+12.1% 24h</div>
-          </GlassCard>
+          <MarketStatCard
+            title="24h Volume"
+            value={marketStats?.totalVolume24h || "$86.2B"}
+            change="+12.1% 24h"
+            icon={BarChart3}
+            iconClass="text-neon bg-neon/10"
+          />
 
-          <GlassCard className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-cool-gray">BTC Dominance</span>
+          <MarketStatCard
+            title="BTC Dominance"
+            value={marketStats?.btcDominance || "52.4%"}
+            change="-0.8% 24h"
+            icon={({ size }: { size: number }) => (
               <div className="w-5 h-5 bg-amber rounded-full flex items-center justify-center">
                 <span className="text-navy text-xs font-bold">₿</span>
               </div>
-            </div>
-            <div className="font-mono font-semibold text-2xl number-roll">
-              {marketStats?.btcDominance || "52.4%"}
-            </div>
-            <div className="text-red-400 text-sm">-0.8% 24h</div>
-          </GlassCard>
+            )}
+            iconClass=""
+          />
 
-          <GlassCard className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-cool-gray">Fear & Greed</span>
-              <Thermometer className="text-amber" size={20} />
-            </div>
-            <div className="font-mono font-semibold text-2xl number-roll">
-              {marketStats?.fearGreedIndex || "64"}
-            </div>
-            <div className="text-amber text-sm">Greed</div>
-          </GlassCard>
+          <MarketStatCard
+            title="Fear & Greed"
+            value={marketStats?.fearGreedIndex || "64"}
+            change="Greed"
+            icon={Thermometer}
+            iconClass="text-amber bg-amber/10"
+          />
         </div>
 
-        {/* Charts and Top Cryptos */}
+        {/* Main Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Price Chart */}
-          <GlassCard className="p-6 h-[500px] flex flex-col">
-            <div className="flex items-center justify-between mb-6">
+          {/* Price Chart Section */}
+          <GlassCard className="p-6 h-[600px] flex flex-col backdrop-blur-lg">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
               <div className="flex items-center space-x-4">
-                <h3 className="font-grotesk font-semibold text-xl">
+                <h3 className="font-grotesk font-semibold text-2xl bg-gradient-to-r from-white to-cool-gray/90 bg-clip-text text-transparent">
                   Price Chart
                 </h3>
                 <select
-                  className="bg-white/10 border border-white/20 rounded-lg px-3 py-1 text-sm focus:outline-none focus:border-electric"
+                  className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-electric focus:ring-1 focus:ring-electric/50 transition-all"
                   value={selectedCoin?.symbol || "BTC"}
                   onChange={(e) => {
                     const coin: Coin | undefined = coins.find(
-                      (c: Coin): boolean => c.symbol === e.target.value
+                      (c: Coin) =>
+                        c.symbol === (e.target as HTMLSelectElement).value
                     );
                     if (coin) setSelectedCoin(coin);
                   }}
                 >
-                  {coins.map(
-                    (coin: Coin): JSX.Element => (
-                      <option key={coin.symbol} value={coin.symbol}>
-                        {coin.name} ({coin.symbol})
-                      </option>
-                    )
-                  )}
+                  {coins.map((coin: Coin) => (
+                    <option key={coin.symbol} value={coin.symbol}>
+                      {coin.name} ({coin.symbol})
+                    </option>
+                  ))}
                 </select>
               </div>
-              <div className="flex space-x-2">
-                <button className="px-3 py-1 text-sm bg-electric/20 text-electric rounded-lg">
-                  24H
-                </button>
-                <button className="px-3 py-1 text-sm text-cool-gray hover:text-electric">
-                  7D
-                </button>
-                <button className="px-3 py-1 text-sm text-cool-gray hover:text-electric">
-                  30D
-                </button>
+              <div className="flex space-x-2 bg-white/5 rounded-lg p-1">
+                {(["24H", "7D", "30D"] as const).map((period) => (
+                  <button
+                    key={period}
+                    onClick={() => setTimeframe(period)}
+                    className={`px-4 py-2 text-sm rounded-md transition-all ${
+                      timeframe === period
+                        ? "bg-electric text-white shadow-lg shadow-electric/20"
+                        : "text-cool-gray hover:text-white"
+                    }`}
+                  >
+                    {period}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* Market Details */}
-            <div className="grid grid-cols-4 gap-4 mb-6">
-              <div className="bg-white/5 rounded-lg p-3">
-                <div className="text-cool-gray text-sm mb-1">24h Volume</div>
-                <div
-                  className="font-mono font-medium text-sm truncate"
-                  title={`$${parseFloat(
+            {/* Market Details Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+              {[
+                {
+                  label: "24h Volume",
+                  value: `$${parseFloat(
                     selectedCoin?.volume24h || "0"
-                  ).toLocaleString()}`}
-                >
-                  ${parseFloat(selectedCoin?.volume24h || "0").toLocaleString()}
-                </div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3">
-                <div className="text-cool-gray text-sm mb-1">24h High</div>
-                <div
-                  className="font-mono font-medium text-sm truncate"
-                  title={`$${(
+                  ).toLocaleString()}`,
+                  bg: "bg-electric/5",
+                },
+                {
+                  label: "24h High",
+                  value: `$${(
                     parseFloat(selectedCoin?.price || "0") * 1.1
-                  ).toLocaleString()}`}
-                >
-                  $
-                  {(
-                    parseFloat(selectedCoin?.price || "0") * 1.1
-                  ).toLocaleString()}
-                </div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3">
-                <div className="text-cool-gray text-sm mb-1">24h Low</div>
-                <div
-                  className="font-mono font-medium text-sm truncate"
-                  title={`$${(
+                  ).toLocaleString()}`,
+                  bg: "bg-emerald/5",
+                },
+                {
+                  label: "24h Low",
+                  value: `$${(
                     parseFloat(selectedCoin?.price || "0") * 0.9
-                  ).toLocaleString()}`}
-                >
-                  $
-                  {(
-                    parseFloat(selectedCoin?.price || "0") * 0.9
-                  ).toLocaleString()}
-                </div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3">
-                <div className="text-cool-gray text-sm mb-1">Sentiment</div>
-                <div
-                  className={`font-medium text-sm ${
+                  ).toLocaleString()}`,
+                  bg: "bg-red-400/5",
+                },
+                {
+                  label: "Sentiment",
+                  value:
+                    parseFloat(selectedCoin?.priceChangePercent24h || "0") >= 5
+                      ? "Bullish"
+                      : parseFloat(
+                          selectedCoin?.priceChangePercent24h || "0"
+                        ) <= -5
+                      ? "Bearish"
+                      : "Neutral",
+                  className:
                     parseFloat(selectedCoin?.priceChangePercent24h || "0") >= 0
                       ? "text-emerald"
-                      : "text-red-400"
-                  }`}
+                      : "text-red-400",
+                },
+              ].map((item, index) => (
+                <div
+                  key={item.label}
+                  className={`${
+                    item.bg || "bg-white/5"
+                  } rounded-xl p-4 backdrop-blur-sm border border-white/5`}
                 >
-                  {parseFloat(selectedCoin?.priceChangePercent24h || "0") >= 5
-                    ? "Bullish"
-                    : parseFloat(selectedCoin?.priceChangePercent24h || "0") <=
-                      -5
-                    ? "Bearish"
-                    : "Neutral"}
+                  <div className="text-cool-gray text-sm mb-2">
+                    {item.label}
+                  </div>
+                  <div
+                    className={`font-mono font-medium text-sm truncate ${
+                      item.className || ""
+                    }`}
+                  >
+                    {item.value}
+                  </div>
                 </div>
-              </div>
+              ))}
             </div>
-            <div className="flex-1 min-h-0">
+
+            {/* Price Chart */}
+            <div className="flex-1 min-h-0 relative group">
+              <div className="absolute inset-0 bg-gradient-to-b from-electric/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"></div>
+            </div>
+
+            <div className="flex-1 min-h-0 relative group">
+              <div className="absolute inset-0 bg-gradient-to-b from-electric/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"></div>
               <PriceChart
+                isLoading={isLoading}
+                error={error}
                 data={{
                   symbol: selectedCoin?.symbol || coins[0]?.symbol || "BTC",
-                  interval: "1d",
-                  candles: Array.isArray(selectedCoin?.candles)
-                    ? selectedCoin.candles
-                    : Array.isArray(coins[0]?.candles)
-                    ? coins[0].candles
-                    : Array.from({ length: 24 }, (_, i) => ({
-                        time: Date.now() - (23 - i) * 3600000,
-                        open: parseFloat(
-                          String(selectedCoin?.price || coins[0]?.price || 0)
-                        ),
-                        high:
-                          parseFloat(
-                            String(selectedCoin?.price || coins[0]?.price || 0)
-                          ) *
-                          (1 + Math.random() * 0.01),
-                        low:
-                          parseFloat(
-                            String(selectedCoin?.price || coins[0]?.price || 0)
-                          ) *
-                          (1 - Math.random() * 0.01),
-                        close: parseFloat(
-                          String(selectedCoin?.price || coins[0]?.price || 0)
-                        ),
-                        volume:
-                          parseFloat(
-                            String(
-                              selectedCoin?.volume24h ||
-                                coins[0]?.volume24h ||
-                                0
-                            )
-                          ) / 24,
-                      })),
+                  interval:
+                    timeframe === "24H"
+                      ? "1h"
+                      : timeframe === "7D"
+                      ? "4h"
+                      : "1d",
+                  candles: selectedCoin?.candles || [],
                   indicators: {
                     rsi: 50,
                     sma20: parseFloat(
-                      String(selectedCoin?.price || coins[0]?.price || 0)
+                      selectedCoin?.price || coins[0]?.price || "0"
                     ),
                     priceChange24h: parseFloat(
-                      String(selectedCoin?.priceChangePercent24h || 0)
+                      selectedCoin?.priceChangePercent24h || "0"
                     ),
                     volumeChange24h: 0,
                   },
                   lastUpdated: new Date().toISOString(),
                 }}
-                isLoading={isLoading}
-                error={error}
-                onSelectCoin={(symbol) => {
-                  const coin: Coin | undefined = coins.find(
-                    (c: Coin): boolean => c.symbol === symbol
-                  );
-                  if (coin) {
-                    setSelectedCoin(coin);
-                  }
+                onSelectCoin={(symbol: string) => {
+                  const coin = coins.find((c: Coin) => c.symbol === symbol);
+                  if (coin) setSelectedCoin(coin);
                 }}
               />
             </div>
           </GlassCard>
 
           {/* Top Cryptocurrencies */}
-          <GlassCard className="p-6">
-            <h3 className="font-grotesk font-semibold text-xl mb-6">
-              Top Cryptocurrencies
-            </h3>
-            <div className="space-y-4">
-              {coins.map((coin: Coin) => (
-                <div
-                  key={coin.symbol}
-                  className={`flex items-center justify-between p-4 bg-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-pointer ${
-                    selectedCoin?.symbol === coin.symbol ? "bg-white/10" : ""
-                  }`}
-                  onClick={() => setSelectedCoin(coin)}
-                >
-                  <div className="flex items-center space-x-3 min-w-0">
-                    <div
-                      className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-                        coin.symbol === "BTC"
-                          ? "bg-amber"
-                          : coin.symbol === "ETH"
-                          ? "bg-blue-500"
-                          : coin.symbol === "SOL"
-                          ? "bg-purple-500"
-                          : "bg-blue-400"
-                      }`}
-                    >
-                      <span className="text-white text-xs font-bold">
-                        {coin.symbol === "BTC"
-                          ? "₿"
-                          : coin.symbol === "ETH"
-                          ? "Ξ"
-                          : coin.symbol.charAt(0)}
-                      </span>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium truncate" title={coin.name}>
-                        {coin.name}
-                      </div>
-                      <div className="text-cool-gray text-sm">
-                        {coin.symbol}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right flex-shrink-0 ml-4">
-                    <div className="font-mono font-medium whitespace-nowrap">
-                      ${Number(coin.price || "0").toLocaleString()}
-                    </div>
-                    <div
-                      className={`text-sm whitespace-nowrap ${
-                        Number(coin.priceChangePercent24h || "0") >= 0
-                          ? "text-emerald"
-                          : "text-red-400"
-                      }`}
-                    >
-                      {Number(coin.priceChangePercent24h || "0") >= 0
-                        ? "+"
-                        : ""}
-                      {Number(coin.priceChangePercent24h || "0").toFixed(2)}%
-                    </div>
-                  </div>
+          <div className="flex flex-col h-[600px]">
+            <GlassCard className="flex-1 p-6 backdrop-blur-lg overflow-hidden">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="font-grotesk font-semibold text-2xl bg-gradient-to-r from-white to-cool-gray/90 bg-clip-text text-transparent">
+                  Top Cryptocurrencies
+                </h3>
+                <div className="flex items-center space-x-2 text-sm text-cool-gray">
+                  <span>24h Change</span>
+                  <span className="inline-block w-2 h-2 rounded-full bg-cool-gray/30"></span>
+                  <span>Volume</span>
                 </div>
-              ))}
-            </div>
-          </GlassCard>
+              </div>
+
+              <div className="space-y-3 overflow-y-auto h-[calc(100%-4rem)] pr-2 scrollbar-thin scrollbar-thumb-electric/20 scrollbar-track-white/5">
+                {coins.map((coin: Coin) => (
+                  <CoinListItem
+                    key={coin.symbol}
+                    coin={coin}
+                    isSelected={selectedCoin?.symbol === coin.symbol}
+                    onClick={() => setSelectedCoin(coin)}
+                  />
+                ))}
+              </div>
+            </GlassCard>
+          </div>
         </div>
 
         {/* AI Market Summary */}
         <div className="mt-8">
-          <GlassCard className="p-6">
-            <div className="flex items-center space-x-3 mb-4">
-              <div className="w-10 h-10 bg-gradient-to-r from-electric to-neon rounded-full flex items-center justify-center pulse-glow">
-                <Bot className="text-white" size={20} />
+          <GlassCard className="p-6 backdrop-blur-lg border border-white/5">
+            <div className="flex items-center space-x-4 mb-6">
+              <div className="w-12 h-12 bg-gradient-to-r from-electric to-neon rounded-xl flex items-center justify-center pulse-glow shadow-lg shadow-electric/20">
+                <Bot className="text-white" size={24} />
               </div>
-              <h3 className="font-grotesk font-semibold text-xl">
-                AI Market Analysis
-              </h3>
+              <div>
+                <h3 className="font-grotesk font-semibold text-2xl bg-gradient-to-r from-white to-cool-gray/90 bg-clip-text text-transparent">
+                  AI Market Analysis
+                </h3>
+                <p className="text-cool-gray text-sm">
+                  Real-time insights powered by advanced AI
+                </p>
+              </div>
             </div>
             {isLoading ? (
               <div className="animate-pulse space-y-4">

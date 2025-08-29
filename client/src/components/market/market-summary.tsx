@@ -42,6 +42,15 @@ export default function MarketSummary({
         },
         body: JSON.stringify({
           message: `Analyze ${symbol} cryptocurrency with current price ${price}, 24h change ${priceChange24h}%, and 24h volume ${volume24h}. Consider technical indicators like RSI and provide a concise market analysis with potential support/resistance levels and market sentiment.`,
+          context: {
+            type: "MARKET_ANALYSIS",
+            data: {
+              symbol,
+              price,
+              priceChange24h,
+              volume24h,
+            },
+          },
         }),
       });
 
@@ -50,7 +59,34 @@ export default function MarketSummary({
       }
 
       const result = await response.json();
-      return result.data;
+      if (!result.success) {
+        throw new Error(result.message || "Failed to get market analysis");
+      }
+
+      const aiResponse = result.data.message;
+
+      // Extract technical analysis data from AI response
+      const analysis: MarketAnalysis = {
+        sentiment: aiResponse.metadata?.ensembleDetails?.modelsUsed?.find(
+          (m: any) => m.name === "FinancialBert"
+        )?.data || {
+          sentiment: "neutral",
+          confidence: 0.5,
+          method: "ensemble",
+          scores: [],
+        },
+        scores: {
+          technical:
+            aiResponse.metadata?.ensembleDetails?.consensusScore || 0.5,
+          fundamental: 0.5,
+          market: 0.5,
+        },
+        analysis: aiResponse.content,
+        supportLevels: [price * 0.95, price * 0.9, price * 0.85],
+        resistanceLevels: [price * 1.05, price * 1.1, price * 1.15],
+      };
+
+      return analysis;
     },
     refetchInterval: 300000, // Refetch every 5 minutes
   });

@@ -1,0 +1,80 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import { storage } from "./storage";
+import { insertChatHistorySchema } from "@shared/schema";
+import type { ChatMessage, NewsArticleResponse } from "@shared/schema";
+import { randomUUID } from "crypto";
+import {
+  binanceClient,
+  newsClient,
+  sentimentClient,
+  twitterClient,
+  aiClient,
+  multiModelService,
+} from "./api-clients";
+import { MarketService } from "./services/market-service";
+import type {
+  DetailedMarketData,
+  MarketStats,
+} from "../shared/types/market-data";
+import type { ModelContribution } from "@shared/schema";
+
+// Type definitions
+interface TrendingTopic {
+  topic_id: string;
+  content: string;
+  timestamp: string;
+  user_handle: string;
+  engagement: {
+    like_count: number;
+    retweet_count: number;
+    reply_count: number;
+  };
+}
+
+interface Tweet {
+  id: string;
+  text: string;
+  createdAt: Date;
+  authorUsername: string;
+  metrics: {
+    likes: number;
+    retweets: number;
+    replies: number;
+  };
+}
+
+interface NewsArticle {
+  id: string;
+  title: string;
+  content: string;
+  source: string;
+  url: string;
+  publishedAt: Date;
+  sentiment?: {
+    score: number;
+    label: 'positive' | 'negative' | 'neutral';
+  };
+}
+
+interface EnrichedMarketData {
+  symbol: string;
+  name: string;
+  price: string;
+  priceChange24h: string;
+  priceChangePercent24h: string;
+  volume24h: string;
+  marketCap: string;
+  relatedTweets?: Tweet[];
+  latestNews?: NewsArticle[];
+}
+
+interface TextContent {
+  content: string;
+  metadata?: Record<string, any>;
+}
+
+// Main routes
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Market data routes
+  const marketService = MarketService.getInstance();

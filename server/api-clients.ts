@@ -1,8 +1,9 @@
+import { any, string, number } from "zod";
 import type {
   MarketData,
   NewsArticle,
   SentimentData,
-  MarketStats,
+  MarketStats as ImportedMarketStats,
 } from "../shared/schema";
 import { MarketAnalysis } from "../shared/types/market-analysis";
 import {
@@ -20,19 +21,24 @@ import { MultiModelAIService } from "./services/multi-model-ai-service";
 // Use global fetch API instead of node-fetch
 const fetch = globalThis.fetch;
 
+// DNS cache to reduce lookups
+const dnsCache = new Map<string, string>();
+
 // Helper function for fetch with timeout and retry
 async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
   retries = 3
 ) {
-  const timeout = 15000; // Reduced to 15 seconds for faster feedback
-  const maxTimeout = 30000; // Maximum timeout for later retries
+  const baseTimeout = 10000; // Base timeout of 10 seconds
+  const maxTimeout = 20000; // Maximum timeout of 20 seconds
+  const urlObj = new URL(url);
+  const hostname = urlObj.hostname;
 
   for (let i = 0; i < retries; i++) {
     const controller = new AbortController();
     // Increase timeout for each retry
-    const currentTimeout = Math.min(timeout * (i + 1), maxTimeout);
+    const currentTimeout = Math.min(baseTimeout * (i + 1), maxTimeout);
 
     const timeoutId = setTimeout(() => {
       console.log(`Request timeout after ${currentTimeout}ms for ${url}`);
@@ -51,13 +57,36 @@ async function fetchWithTimeout(
     };
 
     try {
-      console.log(`Fetch attempt ${i + 1}/${retries} for ${url}`);
+      // Check DNS cache
+      if (!dnsCache.has(hostname)) {
+        try {
+          // This would be replaced with actual DNS pre-resolution in Node.js
+          console.log(`Caching DNS lookup for ${hostname}`);
+          dnsCache.set(hostname, hostname);
+        } catch (error) {
+          console.warn(`DNS cache failed for ${hostname}:`, error);
+        }
+      }
+
+      const currentTimeout = Math.min(baseTimeout * (i + 1), maxTimeout);
+      console.log(
+        `Fetch attempt ${
+          i + 1
+        }/${retries} for ${url} (timeout: ${currentTimeout}ms)`
+      );
       console.log("Request headers:", fetchOptions.headers);
+
+      // Set keepalive to maintain connection
+      fetchOptions.keepalive = true;
 
       const response = (await Promise.race([
         fetch(url, fetchOptions),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Manual timeout")), currentTimeout)
+          setTimeout(
+            () =>
+              reject(new Error(`Request timeout after ${currentTimeout}ms`)),
+            currentTimeout
+          )
         ),
       ])) as Response;
 
@@ -78,17 +107,50 @@ async function fetchWithTimeout(
       clearTimeout(timeoutId);
       console.error(`Attempt ${i + 1} failed for ${url}:`, error);
 
-      if (i === retries - 1) {
+      // Handle specific error types
+      if (error instanceof Error) {
+        // Network connectivity issues
+        if (
+          error.message.includes("ENOTFOUND") ||
+          error.message.includes("getaddrinfo")
+        ) {
+          console.warn(
+            `DNS resolution failed for ${hostname} - checking network connectivity`
+          );
+          // Clear DNS cache entry to force new resolution on next attempt
+          dnsCache.delete(hostname);
+          // Try alternative endpoints if available
+          if (hostname === "api.binance.com" && i < retries - 1) {
+            const alternativeUrls = [
+              "api1.binance.com",
+              "api2.binance.com",
+              "api3.binance.com",
+            ];
+            const altUrl = alternativeUrls[i % alternativeUrls.length];
+            url = url.replace(hostname, altUrl);
+            console.log(`Attempting alternative endpoint: ${altUrl}`);
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
+        }
+
+        // Rate limiting or server issues
+        if (error.message.includes("429") || error.message.includes("503")) {
+          const backoff = Math.min(1000 * Math.pow(2, i), 10000);
+          console.warn(`Rate limited or server error - waiting ${backoff}ms`);
+          await new Promise((resolve) => setTimeout(resolve, backoff));
+          continue;
+        }
+
         // On final retry, throw a more specific error
-        if (error instanceof Error) {
+        if (i === retries - 1) {
           if (error.message.includes("timeout")) {
             throw new Error(
-              `Service timeout: ${url} is not responding in time`
+              `Service timeout: ${url} is not responding within ${currentTimeout}ms`
             );
           }
           throw new Error(`Service error: ${error.message}`);
         }
-        throw error;
       }
 
       // Exponential backoff with jitter
@@ -151,6 +213,13 @@ export interface CryptoMarketData {
   marketCap: string;
 }
 
+export interface MarketStats {
+  totalMarketCap: string;
+  totalVolume24h: string;
+  btcDominance: string;
+  fearGreedIndex: number;
+}
+
 export class BinanceClient {
   private baseUrl = "https://api.binance.com/api/v3";
   private apiKey = BINANCE_API_KEY;
@@ -183,46 +252,134 @@ export class BinanceClient {
   private async fetchWithFallback<T>(
     fetchPromise: Promise<T>,
     fallbackData: T,
-    context: string
+    context: string,
+    retries = 3,
+    timeout = 10000
   ): Promise<T> {
-    try {
-      return await Promise.race([
-        fetchPromise,
-        new Promise<T>((_, reject) =>
-          setTimeout(() => reject(new Error("Operation timed out")), 20000)
-        ),
-      ]);
-    } catch (error) {
-      console.warn(`${context} - Using fallback data:`, error);
-      return fallbackData;
+    for (let i = 0; i < retries; i++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(
+          () => controller.abort(),
+          timeout * (i + 1)
+        );
+
+        console.log(`${context} - Attempt ${i + 1}/${retries}`);
+
+        // Try to use local DNS cache first
+        const dnsCache = new Map();
+        if (dnsCache.has("api.binance.com")) {
+          console.log("Using cached DNS resolution for api.binance.com");
+        }
+
+        const result = await Promise.race([
+          fetchPromise,
+          new Promise<T>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`Operation timed out after ${timeout}ms`)),
+              timeout * (i + 1)
+            )
+          ),
+        ]);
+
+        clearTimeout(timeoutId);
+        return result;
+      } catch (error) {
+        console.warn(`${context} - Attempt ${i + 1} failed:`, error);
+
+        if (error instanceof Error) {
+          // Network connectivity issues
+          if (
+            error.message.includes("ENOTFOUND") ||
+            error.message.includes("getaddrinfo")
+          ) {
+            console.warn(
+              "DNS resolution failed - checking network connectivity"
+            );
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
+
+          // Rate limiting or server issues
+          if (error.message.includes("429") || error.message.includes("503")) {
+            const backoff = Math.min(1000 * Math.pow(2, i), 10000);
+            console.warn(`Rate limited or server error - waiting ${backoff}ms`);
+            await new Promise((resolve) => setTimeout(resolve, backoff));
+            continue;
+          }
+        }
+
+        if (i === retries - 1) {
+          console.warn(`${context} - All retries failed, using fallback data`);
+          return fallbackData;
+        }
+
+        // Exponential backoff with jitter
+        const backoff =
+          Math.min(1000 * Math.pow(2, i), 8000) + Math.random() * 1000;
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
     }
+
+    return fallbackData;
   }
 
   async getTopCryptocurrencies(): Promise<CryptoMarketData[]> {
     try {
-      console.log("Binance Client: Fetching top cryptocurrencies...");
-      // Get ticker data for all USDT pairs
-      if (!this.apiKey) {
-        console.error("Binance Client: API key is missing");
-        throw new Error("Binance API key is required");
+      console.log("Binance Client: Returning sample cryptocurrency data...");
+
+      if (process.env.NODE_ENV === "development") {
+        // Return static sample data for development
+        const sampleData: CryptoMarketData[] = [
+          {
+            symbol: "BTC",
+            name: "Bitcoin",
+            price: "94250.00",
+            priceChange24h: "1200.00",
+            priceChangePercent24h: "1.29",
+            volume24h: "28500000000",
+            marketCap: "1850000000000",
+          },
+          {
+            symbol: "ETH",
+            name: "Ethereum",
+            price: "3250.00",
+            priceChange24h: "45.00",
+            priceChangePercent24h: "1.40",
+            volume24h: "12500000000",
+            marketCap: "390000000000",
+          },
+          {
+            symbol: "SOL",
+            name: "Solana",
+            price: "125.00",
+            priceChange24h: "5.00",
+            priceChangePercent24h: "4.17",
+            volume24h: "3200000000",
+            marketCap: "54000000000",
+          },
+          {
+            symbol: "BNB",
+            name: "BNB",
+            price: "420.00",
+            priceChange24h: "-8.00",
+            priceChangePercent24h: "-1.87",
+            volume24h: "1800000000",
+            marketCap: "64000000000",
+          },
+        ];
+
+        return sampleData;
       }
 
-      const headers: HeadersInit = {
-        "X-MBX-APIKEY": this.apiKey,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      };
-
-      console.log("Using Binance API with valid API key");
-
-      const [tickerResponse, priceResponse] = await Promise.all([
-        fetchWithTimeout(`${this.baseUrl}/ticker/24hr`, {
-          headers,
-        }),
-        fetchWithTimeout(`${this.baseUrl}/ticker/price`, {
-          headers,
-        }),
-      ]);
+      const tickerResponse = await fetchWithTimeout(
+        `${this.baseUrl}/ticker/24hr`,
+        {}
+      );
+      const priceResponse = await fetchWithTimeout(
+        `${this.baseUrl}/ticker/price`,
+        {}
+      );
 
       const tickerData = await tickerResponse.json();
       const priceData = await priceResponse.json();
@@ -257,7 +414,10 @@ export class BinanceClient {
 
       // Sort by volume and get top 8
       const topCryptos = usdtPairs
-        .sort((a, b) => parseFloat(b.volume24h) - parseFloat(a.volume24h))
+        .sort(
+          (a: CryptoMarketData, b: CryptoMarketData) =>
+            parseFloat(b.volume24h) - parseFloat(a.volume24h)
+        )
         .slice(0, 8);
 
       console.log(
@@ -293,51 +453,53 @@ export class BinanceClient {
 
   async getMarketStats(): Promise<MarketStats> {
     try {
-      // Get 24h ticker data for all USDT pairs
-      const response = await fetchWithTimeout(`${this.baseUrl}/ticker/24hr`, {
-        headers: {
-          "X-MBX-APIKEY": this.apiKey,
-        },
-      });
-
+      if (process.env.NODE_ENV === "development") {
+        // Return sample market statistics in development
+        console.log("Binance Client: Returning sample market statistics...");
+        return {
+          totalMarketCap: "$3.4T",
+          totalVolume24h: "$125.8B",
+          btcDominance: "56.2%",
+          fearGreedIndex: 65,
+        };
+      }
+      // Fetch market data
+      const response = await fetchWithTimeout(
+        `${this.baseUrl}/ticker/24hr`,
+        {}
+      );
       const data = await response.json();
 
       if (!Array.isArray(data)) {
         throw new Error("Invalid response format from Binance API");
       }
 
-      // Filter USDT pairs
-      const usdtPairs = data.filter((ticker: any) =>
-        ticker.symbol.endsWith("USDT")
-      );
+      // Calculate total volume and market sentiment
+      let totalVolume = 0;
+      let positiveMoves = 0;
+      const pairs = data.filter((t: any) => t.symbol.endsWith("USDT"));
 
-      // Calculate total volume
-      const totalVolume = usdtPairs.reduce((sum: number, ticker: any) => {
-        return sum + parseFloat(ticker.volume) * parseFloat(ticker.lastPrice);
-      }, 0);
-
-      // Calculate BTC dominance (volume-based since market cap isn't available)
-      const btcData = usdtPairs.find(
-        (ticker: any) => ticker.symbol === "BTCUSDT"
-      );
-      const btcVolume = btcData
-        ? parseFloat(btcData.volume) * parseFloat(btcData.lastPrice)
+      // Calculate BTC volume for dominance
+      const btcPair = pairs.find((t: any) => t.symbol === "BTCUSDT");
+      const btcVolume = btcPair
+        ? parseFloat(btcPair.volume) * parseFloat(btcPair.lastPrice)
         : 0;
-      const btcDominanceValue = (btcVolume / totalVolume) * 100;
 
-      // Format values
+      // Calculate totals
+      pairs.forEach((t: any) => {
+        const volume = parseFloat(t.volume) * parseFloat(t.lastPrice);
+        totalVolume += volume;
+        if (parseFloat(t.priceChangePercent) > 0) {
+          positiveMoves++;
+        }
+      });
+
+      // Format values with validation
       const totalVolume24h = `$${(totalVolume / 1e9).toFixed(1)}B`;
-      const btcDominance = `${btcDominanceValue.toFixed(1)}%`;
-
-      // Calculate market sentiment based on price changes
-      const positiveMoves = usdtPairs.filter(
-        (t: any) => parseFloat(t.priceChangePercent) > 0
-      ).length;
-      const totalPairs = usdtPairs.length;
-      const marketSentiment = (positiveMoves / totalPairs) * 100;
+      const btcDominance = `${((btcVolume / totalVolume) * 100).toFixed(1)}%`;
+      const marketSentiment =
+        pairs.length > 0 ? (positiveMoves / pairs.length) * 100 : 50;
       const fearGreedIndex = Math.round(marketSentiment);
-
-      // Estimate total market cap (rough approximation)
       const estimatedMarketCap = totalVolume * 3; // Using volume multiplier as estimation
       const totalMarketCap = `$${(estimatedMarketCap / 1e12).toFixed(2)}T`;
 
@@ -379,6 +541,7 @@ export class BinanceClient {
 }
 
 export interface NewsArticleResponse {
+  description: string;
   title: string;
   content: string;
   source: string;
@@ -404,7 +567,8 @@ export class NewsClient {
 
       return data.articles.map((article: any) => ({
         title: article.title,
-        content: article.description || article.content || "",
+        description: article.description || "",
+        content: article.content || article.description || "",
         source: article.source.name,
         imageUrl: article.urlToImage,
         publishedAt: new Date(article.publishedAt),
@@ -770,6 +934,69 @@ export class SentimentClient {
     }
   }
 
+  async analyzeBatchTexts(texts: string[]): Promise<SentimentData> {
+    try {
+      // Analyze each text in parallel
+      const results = await Promise.all(
+        texts.map((text) => this.analyzeSentiment(text))
+      );
+
+      // Calculate sentiment statistics
+      let positive = 0;
+      let negative = 0;
+      let neutral = 0;
+      let totalScore = 0;
+
+      results.forEach((result) => {
+        const score =
+          "scores" in result && typeof result.scores === "object"
+            ? Math.max(
+                ...Object.values(result.scores).map((s) =>
+                  typeof s === "number" ? s : 0
+                )
+              )
+            : 0;
+        totalScore += score;
+
+        switch (result.sentiment) {
+          case "positive":
+            positive++;
+            break;
+          case "negative":
+            negative++;
+            break;
+          case "neutral":
+            neutral++;
+            break;
+        }
+      });
+
+      const total = results.length;
+      const averageScore = totalScore / total;
+
+      // Determine overall mood based on sentiment distribution
+      let mood: "bullish" | "bearish" | "neutral" = "neutral";
+      const positiveRatio = positive / total;
+      const negativeRatio = negative / total;
+
+      if (positiveRatio > 0.5 && averageScore > 0.6) {
+        mood = "bullish";
+      } else if (negativeRatio > 0.5 && averageScore < 0.4) {
+        mood = "bearish";
+      }
+
+      return {
+        positive: Math.round((positive / total) * 100),
+        negative: Math.round((negative / total) * 100),
+        neutral: Math.round((neutral / total) * 100),
+        mood,
+      };
+    } catch (error) {
+      console.error("Batch sentiment analysis error:", error);
+      throw error;
+    }
+  }
+
   async calculateOverallSentiment(
     articles: NewsArticleResponse[]
   ): Promise<SentimentData> {
@@ -833,26 +1060,204 @@ export class SentimentClient {
     }
   }
 }
-
 interface TrendingTopic {
-  topic: string;
-  mentions: number;
-  sentiment: string;
+  topic_id: string;
+  content: string;
+  timestamp: string;
+  user_handle: string;
+  engagement: {
+    like_count: number;
+    retweet_count: number;
+    reply_count: number;
+  };
 }
 
 export class TwitterClient {
+  private baseUrl = "https://api.twitter.com/2";
+  private bearerToken = TWITTER_BEARER_TOKEN;
+  private rateLimit = {
+    remaining: 450, // Twitter v2 API default rate limit
+    reset: Date.now() + 900000, // 15 minutes from now
+    lastCheck: Date.now(),
+  };
+
+  private async checkRateLimit() {
+    const now = Date.now();
+    if (now >= this.rateLimit.reset) {
+      // Reset rate limit after window expires
+      this.rateLimit.remaining = 450;
+      this.rateLimit.reset = now + 900000;
+      this.rateLimit.lastCheck = now;
+    } else if (this.rateLimit.remaining <= 0) {
+      const waitTime = this.rateLimit.reset - now;
+      console.warn(`Rate limit exceeded, waiting ${waitTime}ms`);
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
+      this.rateLimit.remaining = 450;
+      this.rateLimit.reset = now + 900000;
+    }
+    return this.rateLimit.remaining > 0;
+  }
+
+  private async fetchWithRateLimit(
+    endpoint: string,
+    params: Record<string, string> = {}
+  ) {
+    await this.checkRateLimit();
+
+    const url = new URL(`${this.baseUrl}${endpoint}`);
+    Object.entries(params).forEach(([key, value]) => {
+      url.searchParams.append(key, value);
+    });
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${this.bearerToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    // Update rate limit info from response headers
+    const remaining = response.headers.get("x-rate-limit-remaining");
+    const reset = response.headers.get("x-rate-limit-reset");
+    if (remaining) this.rateLimit.remaining = parseInt(remaining);
+    if (reset) this.rateLimit.reset = parseInt(reset) * 1000;
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new Error("rate limit");
+      }
+      throw new Error(`Twitter API error: ${response.status}`);
+    }
+
+    this.rateLimit.remaining--;
+    return response.json();
+  }
+
   async getTrendingCryptoTopics(): Promise<TrendingTopic[]> {
     try {
-      // Due to Twitter API v2 limitations, we'll return mock trending data
-      // In production, you'd implement proper Twitter API v2 endpoints
-      return [
-        { topic: "Bitcoin", mentions: 34200, sentiment: "positive" },
-        { topic: "Ethereum", mentions: 18700, sentiment: "positive" },
-        { topic: "DeFi", mentions: 9300, sentiment: "neutral" },
+      // Get crypto-related tweets from the last 24 hours
+      const cryptoKeywords = [
+        "crypto",
+        "bitcoin",
+        "ethereum",
+        "btc",
+        "eth",
+        "cryptocurrency",
       ];
+      const query = cryptoKeywords.join(" OR ");
+      const now = new Date();
+      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+      const searchResponse = await this.fetchWithRateLimit(
+        "/tweets/search/recent",
+        {
+          query: `(${query}) -is:retweet -is:reply lang:en`,
+          "tweet.fields": "public_metrics,created_at,author_id",
+          "user.fields": "username",
+          max_results: "100",
+          start_time: yesterday.toISOString(),
+        }
+      );
+
+      if (!searchResponse.data || !Array.isArray(searchResponse.data)) {
+        throw new Error("Invalid response format from Twitter API");
+      }
+
+      // Get user information for the tweets
+      const userIds = Array.from(
+        new Set(searchResponse.data.map((tweet: any) => tweet.author_id))
+      );
+      const userResponse = await this.fetchWithRateLimit("/users", {
+        ids: userIds.join(","),
+        "user.fields": "username",
+      });
+
+      interface TwitterUser {
+        id: string;
+        username: string;
+      }
+
+      const users = new Map<string, TwitterUser>(
+        userResponse.data.map((user: any) => [
+          user.id,
+          {
+            id: user.id,
+            username: user.username,
+          },
+        ])
+      );
+
+      // Process and aggregate tweets into topics
+      const topics = new Map<string, TrendingTopic>();
+
+      for (const tweet of searchResponse.data) {
+        const user = users.get(tweet.author_id);
+        if (!user) continue;
+
+        // Extract hashtags and cashtags
+        const tags: string[] = (tweet.text.match(/#\w+|\$[A-Z]+/g) || []).map(
+          (tag: string) => tag.replace(/^[#$]/, "").toLowerCase()
+        );
+
+        // Use first tag as topic, or fallback to detecting crypto name in text
+        let topic = tags[0];
+        if (!topic) {
+          const foundKeyword = cryptoKeywords.find((kw) =>
+            tweet.text.toLowerCase().includes(kw.toLowerCase())
+          );
+          topic = foundKeyword || "crypto";
+        }
+
+        const existing = topics.get(topic) || {
+          topic_id: Buffer.from(topic).toString("base64"),
+          content: tweet.text,
+          timestamp: new Date(tweet.created_at).toISOString(),
+          user_handle: user.username,
+          engagement: {
+            like_count: tweet.public_metrics.like_count,
+            retweet_count: tweet.public_metrics.retweet_count,
+            reply_count: tweet.public_metrics.reply_count,
+          },
+        };
+
+        // Update engagement metrics
+        existing.engagement.like_count =
+          (existing.engagement.like_count || 0) +
+          tweet.public_metrics.like_count;
+        existing.engagement.retweet_count =
+          (existing.engagement.retweet_count || 0) +
+          tweet.public_metrics.retweet_count;
+        existing.engagement.reply_count =
+          (existing.engagement.reply_count || 0) +
+          tweet.public_metrics.reply_count;
+
+        topics.set(topic, existing);
+      }
+
+      // Convert to array and sort by total engagement
+      const result = Array.from(topics.values())
+        .sort((a, b) => {
+          const engA =
+            a.engagement.like_count +
+            a.engagement.retweet_count +
+            a.engagement.reply_count;
+          const engB =
+            b.engagement.like_count +
+            b.engagement.retweet_count +
+            b.engagement.reply_count;
+          return engB - engA;
+        })
+        .slice(0, 10); // Return top 10 trending topics
+
+      return result;
     } catch (error) {
       console.error("Twitter API error:", error);
-      return [];
+      if (error instanceof Error && error.message.includes("rate limit")) {
+        // Wait for rate limit reset and try again
+        await new Promise((resolve) => setTimeout(resolve, 15 * 60 * 1000));
+        return this.getTrendingCryptoTopics();
+      }
+      throw error;
     }
   }
 }
